@@ -11,7 +11,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
@@ -30,12 +30,8 @@ jobs:
 
       - name: Fetch all sibling local packages (auto-detected from Lume.xcodeproj)
         run: |
-          # Lume references local Swift packages that live in separate bilipp repos
-          # next to it (e.g. ../LumeRecorder/Kit, ../LumeCloud/LumeCloudKit).
-          # Find every "../<Repo>/..." path in the project and clone that repo.
           REPOS=$(grep -oE 'relativePath = "?\.\./[A-Za-z0-9._-]+' Lume.xcodeproj/project.pbxproj \
                   | sed -E 's#.*\.\./##' | sort -u)
-          # Always include the two known ones as a fallback
           REPOS=$(printf "%s\nLumeRecorder\nLumeCloud\n" "$REPOS" | grep -v '^$' | sort -u)
           echo "Sibling repos needed:"; echo "$REPOS"
           for R in $REPOS; do
@@ -58,7 +54,6 @@ jobs:
         run: |
           pwd
           ls -la
-          find . -maxdepth 2 -name "*.xcodeproj" -o -maxdepth 2 -name "*.xcworkspace"
 
       - name: Create .env from repo secrets (all optional)
         env:
@@ -91,28 +86,41 @@ jobs:
 
       - name: Build (no code signing)
         run: |
-          set -o pipefail
-          xcodebuild \
-            -project Lume.xcodeproj \
-            -scheme "${{ steps.scheme.outputs.name }}" \
-            -configuration Release \
-            -sdk ${{ matrix.sdk }} \
-            -destination "${{ matrix.dest }}" \
-            -derivedDataPath build \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee build.log | grep -E "error:|warning: .*fatal|BUILD (SUCCEEDED|FAILED)" || true
-          grep -q "BUILD SUCCEEDED" build.log
+          build() {
+            xcodebuild \
+              -project Lume.xcodeproj \
+              -scheme "${{ steps.scheme.outputs.name }}" \
+              -configuration Release \
+              -sdk ${{ matrix.sdk }} \
+              -destination "${{ matrix.dest }}" \
+              -derivedDataPath build \
+              -skipPackagePluginValidation \
+              -skipMacroValidation \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              "$@" \
+              build > "$LOG" 2>&1
+            grep -nE "error:|BUILD (SUCCEEDED|FAILED)" "$LOG" || true
+            grep -q "BUILD SUCCEEDED" "$LOG"
+          }
 
-      - name: Upload build log on failure
+          # Attempt 1: normal optimised Release build
+          LOG=build.log
+          if build; then exit 0; fi
+
+          # Attempt 2: the Swift optimiser crashed last time (EarlyPerfInliner on
+          # HueSourceRouter deinit). Rebuild with Swift optimisation turned off.
+          echo "::warning::Optimised build failed - retrying with SWIFT_OPTIMIZATION_LEVEL=-Onone"
+          LOG=build-onone.log
+          build SWIFT_OPTIMIZATION_LEVEL=-Onone
+
+      - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-log-${{ matrix.platform }}
-          path: build.log
+          path: build*.log
           if-no-files-found: ignore
 
       - name: Package unsigned .ipa
