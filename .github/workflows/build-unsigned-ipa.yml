@@ -8,10 +8,14 @@ on:
         description: "Xcode scheme (leave blank to auto-detect)"
         required: false
         default: ""
+      xcode:
+        description: "Xcode version (blank = 26.3, or newest if 26.3 is missing)"
+        required: false
+        default: ""
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -42,18 +46,20 @@ jobs:
           done
           ls -la ..
 
-      - name: Select newest Xcode
+      - name: Select Xcode (26.3 preferred)
         run: |
           ls -d /Applications/Xcode*.app
-          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          WANT="${{ github.event.inputs.xcode }}"
+          [ -z "$WANT" ] && WANT="26.3"
+          if [ -d "/Applications/Xcode_${WANT}.app" ]; then
+            XC="/Applications/Xcode_${WANT}.app"
+          else
+            echo "::warning::Xcode ${WANT} not found, using newest available"
+            XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          fi
           echo "Using $XC"
           sudo xcode-select -s "$XC/Contents/Developer"
           xcodebuild -version
-
-      - name: Show repo layout (debug)
-        run: |
-          pwd
-          ls -la
 
       - name: Create .env from repo secrets (all optional)
         env:
@@ -96,6 +102,7 @@ jobs:
               -derivedDataPath build \
               -skipPackagePluginValidation \
               -skipMacroValidation \
+              -enableCodeCoverage NO \
               CODE_SIGNING_ALLOWED=NO \
               CODE_SIGNING_REQUIRED=NO \
               CODE_SIGN_IDENTITY="" \
@@ -109,8 +116,7 @@ jobs:
           LOG=build.log
           if build; then exit 0; fi
 
-          # Attempt 2: the Swift optimiser crashed last time (EarlyPerfInliner on
-          # HueSourceRouter deinit). Rebuild with Swift optimisation turned off.
+          # Attempt 2: Swift optimiser crash workaround
           echo "::warning::Optimised build failed - retrying with SWIFT_OPTIMIZATION_LEVEL=-Onone"
           LOG=build-onone.log
           build SWIFT_OPTIMIZATION_LEVEL=-Onone
