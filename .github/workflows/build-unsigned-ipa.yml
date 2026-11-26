@@ -28,6 +28,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Fetch sibling LumeRecorder package (needed by Lume.xcodeproj)
+        run: |
+          # The Xcode project references ../LumeRecorder/Kit (a separate repo by the same author)
+          git clone --depth 1 https://github.com/bilipp/LumeRecorder.git ../LumeRecorder
+          ls ../LumeRecorder/Kit
+
       - name: Select newest Xcode
         run: |
           ls -d /Applications/Xcode*.app
