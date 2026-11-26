@@ -1,4 +1,4 @@
-# Place at: .github/workflows/build-unsigned-ipa.yml (in the Lume repo root)
+# Place at: .github/workflows/build-unsigned-ipa.yml (replace the old file)
 name: Build unsigned IPA
 
 on:
@@ -8,12 +8,10 @@ on:
         description: "Xcode scheme (leave blank to auto-detect)"
         required: false
         default: ""
-  push:
-    branches: [main]
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -21,21 +19,28 @@ jobs:
           - platform: iOS
             sdk: iphoneos
             dest: "generic/platform=iOS"
-            products: Release-iphoneos
           - platform: tvOS
             sdk: appletvos
             dest: "generic/platform=tvOS"
-            products: Release-appletvos
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
 
-      - name: Select latest Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          echo "Using $XC"
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+
+      - name: Show repo layout (debug)
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 2 -name "*.xcodeproj" -o -maxdepth 2 -name "*.xcworkspace"
 
       - name: Create .env from repo secrets (all optional)
         env:
@@ -58,10 +63,10 @@ jobs:
       - name: Resolve scheme
         id: scheme
         run: |
+          xcodebuild -list -project Lume.xcodeproj
           S="${{ github.event.inputs.scheme }}"
           if [ -z "$S" ]; then
-            S=$(xcodebuild -list -json -project Lume.xcodeproj | jq -r '.project.schemes[]' | grep -ix 'lume' | head -1)
-            [ -z "$S" ] && S=$(xcodebuild -list -json -project Lume.xcodeproj | jq -r '.project.schemes[0]')
+            S=$(xcodebuild -list -json -project Lume.xcodeproj | python3 -c 'import json,sys; s=json.load(sys.stdin)["project"]["schemes"]; print(next((x for x in s if x.lower()=="lume"), s[0]))')
           fi
           echo "Using scheme: $S"
           echo "name=$S" >> "$GITHUB_OUTPUT"
@@ -81,12 +86,22 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build | xcpretty || exit 1
+            build 2>&1 | tee build.log | grep -E "error:|warning: .*fatal|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.platform }}
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Package unsigned .ipa
         run: |
-          APP=$(find build/Build/Products/${{ matrix.products }} -maxdepth 1 -name "*.app" | head -1)
+          APP=$(find build/Build/Products/Release-${{ matrix.sdk }} -maxdepth 1 -name "*.app" | head -1)
           echo "App bundle: $APP"
+          [ -n "$APP" ] || { echo "No .app found"; exit 1; }
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry "Lume-${{ matrix.platform }}-unsigned.ipa" Payload
